@@ -91,6 +91,14 @@ def test_reset_password_rejects_an_invalid_token() -> None:
     assert response.json()["detail"] == "Invalid or already used password reset token"
 
 
+def test_reset_password_openapi_contract_documents_invalid_token_response() -> None:
+    operation = app.openapi()["paths"]["/api/v1/auth/reset-password"]["post"]
+
+    assert operation["responses"]["400"]["description"] == (
+        "The reset token is invalid, expired, or already revoked."
+    )
+
+
 def test_reset_password_uses_hash_password_before_storing_password(
     monkeypatch,
 ) -> None:

@@ -38,6 +38,16 @@ async def forgot_password(
     "/reset-password",
     response_model=ResetPasswordResponse,
     status_code=status.HTTP_200_OK,
+    summary="Reset a password with a one-time reset token",
+    description=(
+        "Verifies the stored reset-token hash, hashes and stores the new "
+        "password, then permanently revokes the token."
+    ),
+    responses={
+        status.HTTP_400_BAD_REQUEST: {
+            "description": "The reset token is invalid, expired, or already revoked."
+        }
+    },
 )
 async def reset_password(
     request: ResetPasswordRequest,
