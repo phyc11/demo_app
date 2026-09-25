@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from hmac import compare_digest
 from secrets import token_urlsafe
+from sqlite3 import Connection, connect
 from threading import Lock
 from typing import Iterable
 
@@ -29,13 +30,39 @@ class AuthService:
     and single-use behaviour explicit for the current service layer.
     """
 
-    def __init__(self, registered_emails: Iterable[str] | None = None) -> None:
+    def __init__(
+        self,
+        registered_emails: Iterable[str] | None = None,
+        database_path: str = ":memory:",
+    ) -> None:
         self.registered_emails = {
             self._normalise_email(email) for email in (registered_emails or ())
         }
         self.reset_tokens: dict[str, PasswordResetToken] = {}
-        self.password_hashes: dict[str, str] = {}
         self._lock = Lock()
+        self._database: Connection = connect(database_path, check_same_thread=False)
+        self._database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_credentials (
+                email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL
+            )
+            """
+        )
+        self._database.commit()
+
+    @property
+    def password_hashes(self) -> dict[str, str]:
+        """Expose stored password hashes for service consumers and tests.
+
+        Passwords themselves are never persisted: the database table contains
+        only values returned from ``hash_password``.
+        """
+        with self._lock:
+            rows = self._database.execute(
+                "SELECT email, password_hash FROM password_credentials"
+            ).fetchall()
+        return {email: password_hash for email, password_hash in rows}
 
     @staticmethod
     def _normalise_email(email: str) -> str:
@@ -106,7 +133,15 @@ class AuthService:
                 return False
             if not compare_digest(record.token_hash, token_hash):
                 return False
-            self.password_hashes[normalised_email] = password_hash
+            self._database.execute(
+                """
+                INSERT INTO password_credentials (email, password_hash)
+                VALUES (?, ?)
+                ON CONFLICT(email) DO UPDATE SET password_hash = excluded.password_hash
+                """,
+                (normalised_email, password_hash),
+            )
+            self._database.commit()
             record.used = True
             return True
 

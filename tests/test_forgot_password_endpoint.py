@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from src.api.v1.endpoints import auth as auth_endpoint
 from src.core.security import verify_password
 from src.main import app
 from src.services.auth import AuthService, get_auth_service
@@ -87,3 +88,30 @@ def test_reset_password_rejects_an_invalid_token() -> None:
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Invalid or already used password reset token"
+
+
+def test_reset_password_uses_hash_password_before_storing_password(
+    monkeypatch,
+) -> None:
+    service = AuthService(registered_emails=["person@example.com"])
+    reset_token = service.issue_password_reset_token("person@example.com")
+    assert reset_token is not None
+    monkeypatch.setattr(
+        auth_endpoint, "hash_password", lambda password: f"hashed:{password}"
+    )
+    app.dependency_overrides[get_auth_service] = lambda: service
+
+    try:
+        response = TestClient(app).post(
+            "/api/v1/auth/reset-password",
+            json={
+                "email": "person@example.com",
+                "reset_token": reset_token,
+                "new_password": "new-secure-password",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert service.password_hashes["person@example.com"] == "hashed:new-secure-password"

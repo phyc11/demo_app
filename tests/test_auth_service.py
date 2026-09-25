@@ -1,3 +1,4 @@
+from src.core.security import hash_password
 from src.services.auth import AuthService
 
 
@@ -11,3 +12,20 @@ def test_reset_token_is_associated_with_the_registered_email() -> None:
     stored_token = service.reset_tokens["person@example.com"]
     assert stored_token.email == "person@example.com"
     assert stored_token.used is False
+
+
+def test_password_hash_is_persisted_in_the_auth_database(tmp_path) -> None:
+    database_path = tmp_path / "auth.sqlite3"
+    service = AuthService(
+        registered_emails=["person@example.com"], database_path=str(database_path)
+    )
+    reset_token = service.issue_password_reset_token("person@example.com")
+    assert reset_token is not None
+    new_password_hash = hash_password("new-secure-password")
+
+    assert service.reset_password(
+        "person@example.com", reset_token, new_password_hash
+    )
+
+    reloaded_service = AuthService(database_path=str(database_path))
+    assert reloaded_service.password_hashes["person@example.com"] == new_password_hash
