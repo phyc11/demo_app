@@ -1,4 +1,6 @@
 from src.core.security import hash_password
+from datetime import timedelta
+
 from src.services.auth import AuthService
 
 
@@ -32,4 +34,18 @@ def test_password_hash_is_persisted_in_the_auth_database(tmp_path) -> None:
     assert reloaded_service.reset_tokens["person@example.com"].used is True
     assert not reloaded_service.is_password_reset_token_valid(
         "person@example.com", reset_token
+    )
+
+
+def test_expired_reset_token_is_rejected() -> None:
+    service = AuthService(
+        registered_emails=["person@example.com"],
+        reset_token_ttl=timedelta(seconds=-1),
+    )
+    reset_token = service.issue_password_reset_token("person@example.com")
+    assert reset_token is not None
+
+    assert not service.is_password_reset_token_valid("person@example.com", reset_token)
+    assert not service.reset_password(
+        "person@example.com", reset_token, hash_password("new-secure-password")
     )

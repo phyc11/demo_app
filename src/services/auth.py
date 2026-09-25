@@ -1,11 +1,11 @@
-"""In-memory authentication service primitives.
+"""Authentication service primitives backed by SQLite.
 
 The reset-token record deliberately contains only a SHA-256 digest, never the
 bearer token itself.  The plaintext value is returned only when it is issued.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from hmac import compare_digest
 from secrets import token_urlsafe
@@ -20,6 +20,7 @@ class PasswordResetToken:
     token_hash: str
     used: bool = False
     created_at: datetime | None = None
+    expires_at: datetime | None = None
 
 
 class AuthService:
@@ -34,11 +35,13 @@ class AuthService:
         self,
         registered_emails: Iterable[str] | None = None,
         database_path: str = ":memory:",
+        reset_token_ttl: timedelta = timedelta(minutes=15),
     ) -> None:
         self.registered_emails = {
             self._normalise_email(email) for email in (registered_emails or ())
         }
         self._lock = Lock()
+        self._reset_token_ttl = reset_token_ttl
         self._database: Connection = connect(database_path, check_same_thread=False)
         self._database.execute(
             """
@@ -54,10 +57,21 @@ class AuthService:
                 email TEXT PRIMARY KEY,
                 token_hash TEXT NOT NULL,
                 revoked INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                expires_at TEXT
             )
             """
         )
+        token_columns = {
+            column[1]
+            for column in self._database.execute(
+                "PRAGMA table_info(password_reset_tokens)"
+            ).fetchall()
+        }
+        if "expires_at" not in token_columns:
+            self._database.execute(
+                "ALTER TABLE password_reset_tokens ADD COLUMN expires_at TEXT"
+            )
         self._database.commit()
 
     @property
@@ -78,7 +92,10 @@ class AuthService:
         """Return reset-token records stored in the authentication database."""
         with self._lock:
             rows = self._database.execute(
-                "SELECT email, token_hash, revoked, created_at FROM password_reset_tokens"
+                """
+                SELECT email, token_hash, revoked, created_at, expires_at
+                FROM password_reset_tokens
+                """
             ).fetchall()
         return {
             email: PasswordResetToken(
@@ -86,14 +103,15 @@ class AuthService:
                 token_hash=token_hash,
                 used=bool(revoked),
                 created_at=datetime.fromisoformat(created_at),
+                expires_at=datetime.fromisoformat(expires_at) if expires_at else None,
             )
-            for email, token_hash, revoked, created_at in rows
+            for email, token_hash, revoked, created_at, expires_at in rows
         }
 
     def _get_reset_token(self, email: str) -> PasswordResetToken | None:
         row = self._database.execute(
             """
-            SELECT email, token_hash, revoked, created_at
+            SELECT email, token_hash, revoked, created_at, expires_at
             FROM password_reset_tokens
             WHERE email = ?
             """,
@@ -101,13 +119,18 @@ class AuthService:
         ).fetchone()
         if row is None:
             return None
-        stored_email, token_hash, revoked, created_at = row
+        stored_email, token_hash, revoked, created_at, expires_at = row
         return PasswordResetToken(
             email=stored_email,
             token_hash=token_hash,
             used=bool(revoked),
             created_at=datetime.fromisoformat(created_at),
+            expires_at=datetime.fromisoformat(expires_at) if expires_at else None,
         )
+
+    @staticmethod
+    def _is_expired(record: PasswordResetToken) -> bool:
+        return record.expires_at is None or record.expires_at <= datetime.now(timezone.utc)
 
     @staticmethod
     def _normalise_email(email: str) -> str:
@@ -131,19 +154,25 @@ class AuthService:
                 return None
 
             token = token_urlsafe(32)
+            created_at = datetime.now(timezone.utc)
+            expires_at = created_at + self._reset_token_ttl
             self._database.execute(
                 """
-                INSERT INTO password_reset_tokens (email, token_hash, revoked, created_at)
-                VALUES (?, ?, 0, ?)
+                INSERT INTO password_reset_tokens (
+                    email, token_hash, revoked, created_at, expires_at
+                )
+                VALUES (?, ?, 0, ?, ?)
                 ON CONFLICT(email) DO UPDATE SET
                     token_hash = excluded.token_hash,
                     revoked = 0,
-                    created_at = excluded.created_at
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
                 """,
                 (
                     normalised_email,
                     sha256(token.encode("utf-8")).hexdigest(),
-                    datetime.now(timezone.utc).isoformat(),
+                    created_at.isoformat(),
+                    expires_at.isoformat(),
                 ),
             )
             self._database.commit()
@@ -155,7 +184,7 @@ class AuthService:
         token_hash = sha256(token.encode("utf-8")).hexdigest()
         with self._lock:
             record = self._get_reset_token(normalised_email)
-            if record is None or record.used:
+            if record is None or record.used or self._is_expired(record):
                 return False
             if not compare_digest(record.token_hash, token_hash):
                 return False
@@ -175,6 +204,7 @@ class AuthService:
             return bool(
                 record
                 and not record.used
+                and not self._is_expired(record)
                 and compare_digest(record.token_hash, token_hash)
             )
 
@@ -188,7 +218,7 @@ class AuthService:
         token_hash = sha256(token.encode("utf-8")).hexdigest()
         with self._lock:
             record = self._get_reset_token(normalised_email)
-            if record is None or record.used:
+            if record is None or record.used or self._is_expired(record):
                 return False
             if not compare_digest(record.token_hash, token_hash):
                 return False
