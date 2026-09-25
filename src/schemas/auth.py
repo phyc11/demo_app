@@ -18,7 +18,12 @@ class LoginRequest(BaseModel):
 
 
 class ForgotPasswordRequest(BaseModel):
-    """Payload used to request a password-reset token."""
+    """Payload used to request a password-reset token.
+
+    This intentionally mirrors the email field used by ``RegisterRequest`` and
+    ``LoginRequest``.  ``EmailStr`` makes Pydantic reject malformed payloads
+    before the endpoint calls ``AuthService``.
+    """
 
     email: EmailStr
 

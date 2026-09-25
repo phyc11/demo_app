@@ -15,11 +15,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
     status_code=status.HTTP_200_OK,
 )
 async def forgot_password(
-    payload: ForgotPasswordRequest,
+    request: ForgotPasswordRequest,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> ForgotPasswordResponse:
     """Issue the registered account's one-time password-reset token."""
-    reset_token = auth_service.issue_password_reset_token(str(payload.email))
+    reset_token = auth_service.issue_password_reset_token(str(request.email))
     if reset_token is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
