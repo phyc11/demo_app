@@ -38,7 +38,6 @@ class AuthService:
         self.registered_emails = {
             self._normalise_email(email) for email in (registered_emails or ())
         }
-        self.reset_tokens: dict[str, PasswordResetToken] = {}
         self._lock = Lock()
         self._database: Connection = connect(database_path, check_same_thread=False)
         self._database.execute(
@@ -46,6 +45,16 @@ class AuthService:
             CREATE TABLE IF NOT EXISTS password_credentials (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL
+            )
+            """
+        )
+        self._database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS password_reset_tokens (
+                email TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
             )
             """
         )
@@ -63,6 +72,42 @@ class AuthService:
                 "SELECT email, password_hash FROM password_credentials"
             ).fetchall()
         return {email: password_hash for email, password_hash in rows}
+
+    @property
+    def reset_tokens(self) -> dict[str, PasswordResetToken]:
+        """Return reset-token records stored in the authentication database."""
+        with self._lock:
+            rows = self._database.execute(
+                "SELECT email, token_hash, revoked, created_at FROM password_reset_tokens"
+            ).fetchall()
+        return {
+            email: PasswordResetToken(
+                email=email,
+                token_hash=token_hash,
+                used=bool(revoked),
+                created_at=datetime.fromisoformat(created_at),
+            )
+            for email, token_hash, revoked, created_at in rows
+        }
+
+    def _get_reset_token(self, email: str) -> PasswordResetToken | None:
+        row = self._database.execute(
+            """
+            SELECT email, token_hash, revoked, created_at
+            FROM password_reset_tokens
+            WHERE email = ?
+            """,
+            (email,),
+        ).fetchone()
+        if row is None:
+            return None
+        stored_email, token_hash, revoked, created_at = row
+        return PasswordResetToken(
+            email=stored_email,
+            token_hash=token_hash,
+            used=bool(revoked),
+            created_at=datetime.fromisoformat(created_at),
+        )
 
     @staticmethod
     def _normalise_email(email: str) -> str:
@@ -86,12 +131,22 @@ class AuthService:
                 return None
 
             token = token_urlsafe(32)
-            self.reset_tokens[normalised_email] = PasswordResetToken(
-                email=normalised_email,
-                token_hash=sha256(token.encode("utf-8")).hexdigest(),
-                used=False,
-                created_at=datetime.now(timezone.utc),
+            self._database.execute(
+                """
+                INSERT INTO password_reset_tokens (email, token_hash, revoked, created_at)
+                VALUES (?, ?, 0, ?)
+                ON CONFLICT(email) DO UPDATE SET
+                    token_hash = excluded.token_hash,
+                    revoked = 0,
+                    created_at = excluded.created_at
+                """,
+                (
+                    normalised_email,
+                    sha256(token.encode("utf-8")).hexdigest(),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
+            self._database.commit()
             return token
 
     def consume_password_reset_token(self, email: str, token: str) -> bool:
@@ -99,12 +154,16 @@ class AuthService:
         normalised_email = self._normalise_email(email)
         token_hash = sha256(token.encode("utf-8")).hexdigest()
         with self._lock:
-            record = self.reset_tokens.get(normalised_email)
+            record = self._get_reset_token(normalised_email)
             if record is None or record.used:
                 return False
             if not compare_digest(record.token_hash, token_hash):
                 return False
-            record.used = True
+            self._database.execute(
+                "UPDATE password_reset_tokens SET revoked = 1 WHERE email = ?",
+                (normalised_email,),
+            )
+            self._database.commit()
             return True
 
     def is_password_reset_token_valid(self, email: str, token: str) -> bool:
@@ -112,7 +171,7 @@ class AuthService:
         normalised_email = self._normalise_email(email)
         token_hash = sha256(token.encode("utf-8")).hexdigest()
         with self._lock:
-            record = self.reset_tokens.get(normalised_email)
+            record = self._get_reset_token(normalised_email)
             return bool(
                 record
                 and not record.used
@@ -128,7 +187,7 @@ class AuthService:
         normalised_email = self._normalise_email(email)
         token_hash = sha256(token.encode("utf-8")).hexdigest()
         with self._lock:
-            record = self.reset_tokens.get(normalised_email)
+            record = self._get_reset_token(normalised_email)
             if record is None or record.used:
                 return False
             if not compare_digest(record.token_hash, token_hash):
@@ -141,8 +200,11 @@ class AuthService:
                 """,
                 (normalised_email, password_hash),
             )
+            self._database.execute(
+                "UPDATE password_reset_tokens SET revoked = 1 WHERE email = ?",
+                (normalised_email,),
+            )
             self._database.commit()
-            record.used = True
             return True
 
 

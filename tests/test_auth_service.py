@@ -29,3 +29,7 @@ def test_password_hash_is_persisted_in_the_auth_database(tmp_path) -> None:
 
     reloaded_service = AuthService(database_path=str(database_path))
     assert reloaded_service.password_hashes["person@example.com"] == new_password_hash
+    assert reloaded_service.reset_tokens["person@example.com"].used is True
+    assert not reloaded_service.is_password_reset_token_valid(
+        "person@example.com", reset_token
+    )
