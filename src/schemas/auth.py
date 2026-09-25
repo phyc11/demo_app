@@ -47,3 +47,4 @@ class ResetPasswordResponse(BaseModel):
     """Confirmation returned after a password has been reset."""
 
     message: str = "Password reset successfully"
+    token_revoked: bool = True

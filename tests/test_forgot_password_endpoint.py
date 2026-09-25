@@ -61,6 +61,7 @@ def test_reset_password_verifies_token_hashes_password_and_revokes_token() -> No
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+    assert response.json()["token_revoked"] is True
     assert service.reset_tokens["person@example.com"].used is True
     assert service.password_hashes["person@example.com"] != "new-secure-password"
     assert verify_password(
