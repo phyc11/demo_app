@@ -1,0 +1,30 @@
+"""Schemas used by authentication endpoints."""
+
+from pydantic import BaseModel, EmailStr, Field
+
+
+class RegisterRequest(BaseModel):
+    """Payload used when registering an account."""
+
+    email: EmailStr
+    password: str = Field(min_length=8)
+
+
+class LoginRequest(BaseModel):
+    """Payload used when signing in."""
+
+    email: EmailStr
+    password: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Payload used to request a password-reset token."""
+
+    email: EmailStr
+
+
+class ForgotPasswordResponse(BaseModel):
+    """Token returned to the caller so it can be delivered to the user."""
+
+    reset_token: str
+    message: str = "Password reset token issued"
