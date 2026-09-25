@@ -33,3 +33,17 @@ class ForgotPasswordResponse(BaseModel):
 
     reset_token: str
     message: str = "Password reset token issued"
+
+
+class ResetPasswordRequest(BaseModel):
+    """Payload used to consume a password-reset token."""
+
+    email: EmailStr
+    reset_token: str = Field(min_length=1)
+    new_password: str = Field(min_length=8)
+
+
+class ResetPasswordResponse(BaseModel):
+    """Confirmation returned after a password has been reset."""
+
+    message: str = "Password reset successfully"

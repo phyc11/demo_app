@@ -2,7 +2,13 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from src.schemas.auth import ForgotPasswordRequest, ForgotPasswordResponse
+from src.core.security import hash_password
+from src.schemas.auth import (
+    ForgotPasswordRequest,
+    ForgotPasswordResponse,
+    ResetPasswordRequest,
+    ResetPasswordResponse,
+)
 from src.services.auth import AuthService, get_auth_service
 
 
@@ -26,3 +32,32 @@ async def forgot_password(
             detail="No registered account found for this email address",
         )
     return ForgotPasswordResponse(reset_token=reset_token)
+
+
+@router.post(
+    "/reset-password",
+    response_model=ResetPasswordResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def reset_password(
+    request: ResetPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+) -> ResetPasswordResponse:
+    """Consume a valid reset token and replace the account password."""
+    if not auth_service.is_password_reset_token_valid(
+        str(request.email), request.reset_token
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or already used password reset token",
+        )
+    new_password_hash = hash_password(request.new_password)
+    reset_completed = auth_service.reset_password(
+        str(request.email), request.reset_token, new_password_hash
+    )
+    if not reset_completed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or already used password reset token",
+        )
+    return ResetPasswordResponse()

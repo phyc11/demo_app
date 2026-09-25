@@ -34,6 +34,7 @@ class AuthService:
             self._normalise_email(email) for email in (registered_emails or ())
         }
         self.reset_tokens: dict[str, PasswordResetToken] = {}
+        self.password_hashes: dict[str, str] = {}
         self._lock = Lock()
 
     @staticmethod
@@ -76,6 +77,36 @@ class AuthService:
                 return False
             if not compare_digest(record.token_hash, token_hash):
                 return False
+            record.used = True
+            return True
+
+    def is_password_reset_token_valid(self, email: str, token: str) -> bool:
+        """Return whether ``token`` is the current unused token for ``email``."""
+        normalised_email = self._normalise_email(email)
+        token_hash = sha256(token.encode("utf-8")).hexdigest()
+        with self._lock:
+            record = self.reset_tokens.get(normalised_email)
+            return bool(
+                record
+                and not record.used
+                and compare_digest(record.token_hash, token_hash)
+            )
+
+    def reset_password(self, email: str, token: str, password_hash: str) -> bool:
+        """Verify a token, store a new password hash, and revoke the token.
+
+        The check and revocation occur under one lock so a token cannot reset
+        more than one password when requests arrive concurrently.
+        """
+        normalised_email = self._normalise_email(email)
+        token_hash = sha256(token.encode("utf-8")).hexdigest()
+        with self._lock:
+            record = self.reset_tokens.get(normalised_email)
+            if record is None or record.used:
+                return False
+            if not compare_digest(record.token_hash, token_hash):
+                return False
+            self.password_hashes[normalised_email] = password_hash
             record.used = True
             return True
 
